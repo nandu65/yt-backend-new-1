@@ -1,10 +1,9 @@
 services:
   - type: web
-    name: fetch-downloader
+    name: fetch-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn server:app --workers 2 --timeout 300 --bind 0.0.0.0:$PORT
+    buildCommand: "bash build.sh"
+    startCommand: "gunicorn server:app --workers 2 --timeout 300"
     envVars:
       - key: ACCESS_PASSWORD
-        value: ""   # Set a password here or in the Render dashboard
-    autoDeploy: true
+        sync: false
