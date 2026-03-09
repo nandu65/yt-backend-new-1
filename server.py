@@ -44,34 +44,41 @@ else:
 
 # ── Start bgutil PO token server ─────────────────────────────────────────────
 def start_pot_server():
-    try:
-        if not os.path.exists(BGUTIL_SERVER_PATH):
-            print(f"[FETCH] bgutil server not found at {BGUTIL_SERVER_PATH}, skipping")
-            return
+    import urllib.request
 
+    if not os.path.exists(BGUTIL_SERVER_PATH):
+        print(f"[FETCH] bgutil not found at {BGUTIL_SERVER_PATH}")
+        return
+
+    try:
         proc = subprocess.Popen(
             ["node", BGUTIL_SERVER_PATH, "--port", str(BGUTIL_PORT)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
+        print(f"[FETCH] bgutil process started (PID {proc.pid})")
 
-        # Wait up to 10 seconds for server to be ready
-        import urllib.request
-        for i in range(10):
+        # Wait up to 20 seconds for server to be ready
+        for i in range(20):
             time.sleep(1)
+            # Check if process died
+            if proc.poll() is not None:
+                out, err = proc.communicate()
+                print(f"[FETCH] bgutil process died: {err.decode()}")
+                return
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{BGUTIL_PORT}", timeout=1)
+                urllib.request.urlopen(f"http://127.0.0.1:{BGUTIL_PORT}/", timeout=1)
                 print(f"[FETCH] bgutil PO token server ready on port {BGUTIL_PORT} ✓")
                 return
             except Exception:
-                pass
+                print(f"[FETCH] waiting for bgutil... ({i+1}/20)")
 
-        print("[FETCH] bgutil server started (not verified)")
+        print("[FETCH] bgutil server did not respond in time")
     except Exception as e:
-        print(f"[FETCH] bgutil server error: {e}")
+        print(f"[FETCH] bgutil error: {e}")
 
-# Start in background thread so it doesn't block app startup
-threading.Thread(target=start_pot_server, daemon=True).start()
+# Start POT server immediately (blocking until ready or timeout)
+start_pot_server()
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
