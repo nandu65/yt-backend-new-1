@@ -4,20 +4,13 @@ set -e
 echo "[FETCH] Installing Python dependencies..."
 pip install -r requirements.txt
 
-echo "[FETCH] Installing Node.js bgutil server..."
-mkdir -p /tmp/bgutil-server
+echo "[FETCH] Cloning bgutil PO token server v1.3.1..."
+cd /opt/render/project
+git clone --single-branch --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
 
-if [ ! -f "/tmp/bgutil-server/dist/server.js" ]; then
-    echo "[FETCH] Cloning bgutil server..."
-    cd /tmp
-    git clone --depth 1 https://github.com/brainicism/bgutil-ytdlp-pot-provider.git bgutil-repo
-    cd bgutil-repo/server
-    npm install --omit=dev
-    npm run build
-    mkdir -p /tmp/bgutil-server
-    cp -r dist /tmp/bgutil-server/
-    cp -r node_modules /tmp/bgutil-server/
-    echo "[FETCH] bgutil server built successfully"
-fi
+echo "[FETCH] Building bgutil server..."
+cd /opt/render/project/bgutil-ytdlp-pot-provider/server
+npm ci
+npx tsc
 
-echo "[FETCH] Build complete!"
+echo "[FETCH] Build complete! Server will start at runtime."
