@@ -13,12 +13,29 @@ import shutil
 import threading
 import time
 
+import subprocess
+
 try:
     import static_ffmpeg
     static_ffmpeg.add_paths()
     print("[FETCH] static-ffmpeg loaded")
 except Exception as e:
     print(f"[FETCH] static-ffmpeg warning: {e}")
+
+# Start bgutil PO token server for YouTube bot detection bypass
+def start_pot_server():
+    try:
+        result = subprocess.run(["node", "--version"], capture_output=True)
+        if result.returncode == 0:
+            subprocess.Popen(
+                ["node", "/tmp/bgutil-server/dist/server.js", "--port", "4416"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            print("[FETCH] bgutil PO token server started on port 4416")
+        else:
+            print("[FETCH] Node.js not available, skipping PO token server")
+    except Exception as e:
+        print(f"[FETCH] PO token server warning: {e}")
 
 app = Flask(__name__)
 CORS(app, origins=["*"])
@@ -36,6 +53,8 @@ if os.path.exists(SECRET_COOKIES):
 else:
     print("[FETCH] No cookies.txt found")
 
+start_pot_server()
+
 
 def check_auth(req):
     if not ACCESS_PASSWORD:
@@ -52,7 +71,11 @@ def base_ydl_opts():
         },
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web", "tv_embedded"],
+                "player_client": ["web"],
+            },
+            # Tell bgutil plugin where the PO token server is
+            "youtubepot-bgutilhttp": {
+                "base_url": ["http://127.0.0.1:4416"],
             }
         },
     }
