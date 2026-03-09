@@ -1,9 +1,6 @@
 services:
   - type: web
-    name: fetch-backend
+    name: fetch-backend-v2
     env: python
-    buildCommand: "bash build.sh"
-    startCommand: "gunicorn server:app --workers 2 --timeout 300"
-    envVars:
-      - key: ACCESS_PASSWORD
-        sync: false
+    buildCommand: bash build.sh
+    startCommand: gunicorn server:app --workers 2 --timeout 300
