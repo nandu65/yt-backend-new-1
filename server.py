@@ -1,7 +1,8 @@
 """
-FETCH — Render-Ready Backend
-- /resolve  → returns stream URLs (used by player, works for YouTube too)
-- /download → server-side download + stream to browser (for Instagram/TikTok/Reddit/etc)
+FETCH — Render Backend
+- Starts bgutil PO token server for YouTube bot detection bypass
+- /resolve  → returns stream URLs for player preview
+- /download → server downloads + streams file to browser (with ffmpeg merge)
 """
 
 from flask import Flask, request, jsonify, Response, stream_with_context
@@ -12,30 +13,15 @@ import uuid
 import shutil
 import threading
 import time
-
 import subprocess
 
+# ── static-ffmpeg ────────────────────────────────────────────────────────────
 try:
     import static_ffmpeg
     static_ffmpeg.add_paths()
-    print("[FETCH] static-ffmpeg loaded")
+    print("[FETCH] static-ffmpeg loaded ✓")
 except Exception as e:
     print(f"[FETCH] static-ffmpeg warning: {e}")
-
-# Start bgutil PO token server for YouTube bot detection bypass
-def start_pot_server():
-    try:
-        result = subprocess.run(["node", "--version"], capture_output=True)
-        if result.returncode == 0:
-            subprocess.Popen(
-                ["node", "/tmp/bgutil-server/dist/server.js", "--port", "4416"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            print("[FETCH] bgutil PO token server started on port 4416")
-        else:
-            print("[FETCH] Node.js not available, skipping PO token server")
-    except Exception as e:
-        print(f"[FETCH] PO token server warning: {e}")
 
 app = Flask(__name__)
 CORS(app, origins=["*"])
@@ -43,25 +29,59 @@ CORS(app, origins=["*"])
 TEMP_DIR = "/tmp/fetch_downloads"
 SECRET_COOKIES = "/etc/secrets/cookies.txt"
 COOKIES_FILE = "/tmp/cookies.txt"
-os.makedirs(TEMP_DIR, exist_ok=True)
+BGUTIL_SERVER_PATH = "/opt/render/project/bgutil-ytdlp-pot-provider/server/build/main.js"
+BGUTIL_PORT = 4416
 
+os.makedirs(TEMP_DIR, exist_ok=True)
 ACCESS_PASSWORD = os.environ.get("ACCESS_PASSWORD", "")
 
+# ── Copy cookies to writable location ────────────────────────────────────────
 if os.path.exists(SECRET_COOKIES):
     shutil.copy2(SECRET_COOKIES, COOKIES_FILE)
     print("[FETCH] cookies.txt copied to /tmp ✓")
 else:
     print("[FETCH] No cookies.txt found")
 
-start_pot_server()
+# ── Start bgutil PO token server ─────────────────────────────────────────────
+def start_pot_server():
+    try:
+        if not os.path.exists(BGUTIL_SERVER_PATH):
+            print(f"[FETCH] bgutil server not found at {BGUTIL_SERVER_PATH}, skipping")
+            return
+
+        proc = subprocess.Popen(
+            ["node", BGUTIL_SERVER_PATH, "--port", str(BGUTIL_PORT)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
+        # Wait up to 10 seconds for server to be ready
+        import urllib.request
+        for i in range(10):
+            time.sleep(1)
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{BGUTIL_PORT}", timeout=1)
+                print(f"[FETCH] bgutil PO token server ready on port {BGUTIL_PORT} ✓")
+                return
+            except Exception:
+                pass
+
+        print("[FETCH] bgutil server started (not verified)")
+    except Exception as e:
+        print(f"[FETCH] bgutil server error: {e}")
+
+# Start in background thread so it doesn't block app startup
+threading.Thread(target=start_pot_server, daemon=True).start()
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
 def check_auth(req):
     if not ACCESS_PASSWORD:
         return True
     return req.headers.get("X-Access-Token", "") == ACCESS_PASSWORD
 
 
+# ── yt-dlp base options ──────────────────────────────────────────────────────
 def base_ydl_opts():
     opts = {
         "quiet": True,
@@ -73,10 +93,9 @@ def base_ydl_opts():
             "youtube": {
                 "player_client": ["web"],
             },
-            # Tell bgutil plugin where the PO token server is
             "youtubepot-bgutilhttp": {
-                "base_url": ["http://127.0.0.1:4416"],
-            }
+                "base_url": [f"http://127.0.0.1:{BGUTIL_PORT}"],
+            },
         },
     }
     if os.path.exists(COOKIES_FILE):
@@ -84,6 +103,7 @@ def base_ydl_opts():
     return opts
 
 
+# ── Cleanup helper ───────────────────────────────────────────────────────────
 def cleanup_file(path, delay=60):
     def _delete():
         time.sleep(delay)
@@ -95,11 +115,12 @@ def cleanup_file(path, delay=60):
     threading.Thread(target=_delete, daemon=True).start()
 
 
-# ── /resolve — returns direct stream URLs (no server download) ───────────────
+# ── /resolve — get stream URLs + formats for player ─────────────────────────
 @app.route("/resolve", methods=["POST"])
 def resolve():
     if not check_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
+
     data = request.get_json()
     if not data or not data.get("url"):
         return jsonify({"error": "No URL provided"}), 400
@@ -154,12 +175,9 @@ def resolve():
             -(x["height"] or 0)
         ))
 
-        # Filter to only show formats that have BOTH video and audio
-        # If none exist, keep all (some platforms only have combined streams)
-        combined = [f for f in formats if f["has_video"] and f["has_audio"]]
-        display_formats = combined if combined else formats
-
-        best = display_formats[0] if display_formats else None
+        best = next((f for f in formats if f["has_video"] and f["has_audio"]), None)
+        if not best and formats:
+            best = formats[0]
 
         return jsonify({
             "title": info.get("title"),
@@ -169,7 +187,7 @@ def resolve():
             "platform": info.get("extractor_key"),
             "stream_url": best["url"] if best else None,
             "stream_ext": best["ext"] if best else "mp4",
-            "formats": display_formats[:20],
+            "formats": formats[:20],
         })
 
     except yt_dlp.utils.DownloadError as e:
@@ -178,11 +196,12 @@ def resolve():
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
-# ── /download — server downloads and streams file to browser ─────────────────
+# ── /download — server downloads + merges + streams file to browser ──────────
 @app.route("/download", methods=["POST"])
 def download():
     if not check_auth(request):
         return jsonify({"error": "Unauthorized"}), 401
+
     data = request.get_json()
     if not data or not data.get("url"):
         return jsonify({"error": "No URL provided"}), 400
@@ -194,22 +213,26 @@ def download():
     opts = base_ydl_opts()
     opts["outtmpl"] = out_template
     opts["noplaylist"] = not data.get("playlist", False)
-    opts["format"] = data.get("format", "bestvideo+bestaudio/bestvideo*+bestaudio/best")
     opts["postprocessors"] = []
 
-    if ext not in ("mp3", "m4a"):
-        opts["merge_output_format"] = ext
-    else:
+    # Audio only
+    if ext in ("mp3", "m4a"):
         opts["format"] = "bestaudio/best"
         opts["postprocessors"].append({
             "key": "FFmpegExtractAudio",
             "preferredcodec": ext,
             "preferredquality": "192",
         })
+    else:
+        # Use format string from frontend if provided, else best video+audio
+        opts["format"] = data.get("format", "bestvideo+bestaudio/bestvideo*+bestaudio/best")
+        opts["merge_output_format"] = ext
+
     if data.get("subtitles"):
         opts["writesubtitles"] = True
         opts["writeautomaticsub"] = True
         opts["subtitleslangs"] = ["en"]
+
     if data.get("metadata"):
         opts["postprocessors"].append({"key": "FFmpegMetadata"})
 
@@ -246,12 +269,14 @@ def download():
                 "Content-Length": str(os.path.getsize(out_file)),
             }
         )
+
     except yt_dlp.utils.DownloadError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Server error: {str(e)}"}), 500
 
 
+# ── /info — quick metadata fetch ─────────────────────────────────────────────
 @app.route("/info", methods=["POST"])
 def get_info():
     if not check_auth(request):
@@ -274,12 +299,23 @@ def get_info():
         return jsonify({"error": str(e)}), 400
 
 
+# ── /health ──────────────────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])
 def health():
+    import urllib.request
+    pot_ok = False
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{BGUTIL_PORT}", timeout=1)
+        pot_ok = True
+    except Exception:
+        pass
+
     return jsonify({
         "status": "ok",
         "service": "FETCH",
-        "cookies": os.path.exists(COOKIES_FILE)
+        "cookies": os.path.exists(COOKIES_FILE),
+        "pot_server": pot_ok,
+        "bgutil_path_exists": os.path.exists(BGUTIL_SERVER_PATH),
     })
 
 
