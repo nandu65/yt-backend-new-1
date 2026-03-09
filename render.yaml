@@ -3,4 +3,4 @@ services:
     name: fetch-backend-v2
     env: python
     buildCommand: bash build.sh
-    startCommand: gunicorn server:app --workers 2 --timeout 300
+    startCommand: gunicorn server:app --workers 1 --timeout 120 --preload
